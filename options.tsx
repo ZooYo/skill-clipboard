@@ -119,10 +119,30 @@ function OptionsPage() {
     [skills, selectedId]
   )
 
-  const html = useMemo(
-    () => renderMarkdown(selected?.content ?? ""),
-    [selected?.content]
-  )
+  // Per-selection drafts for the name + content inputs. We deliberately avoid
+  // binding the controlled <input>/<textarea> directly to `selected.name` /
+  // `selected.content`: those values flow through @plasmohq/storage's async
+  // round-trip, so a controlled value can briefly lag behind the DOM after a
+  // keystroke. When React then re-syncs the value, the textarea's selection
+  // collapses to the end and the caret "jumps" mid-edit. Holding a local
+  // draft keeps the controlled value in step with the DOM on every keystroke
+  // and lets storage catch up in the background.
+  const [nameDraft, setNameDraft] = useState("")
+  const [contentDraft, setContentDraft] = useState("")
+  useEffect(() => {
+    // Re-hydrate only when the active skill changes, not on every storage
+    // echo of our own writes -- otherwise we'd risk stomping the caret again.
+    if (!selected) {
+      setNameDraft("")
+      setContentDraft("")
+      return
+    }
+    setNameDraft(selected.name)
+    setContentDraft(selected.content)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, selected !== null])
+
+  const html = useMemo(() => renderMarkdown(contentDraft), [contentDraft])
 
   // Per-selection draft for the command input so users can type/erase without
   // hitting validation errors instantly committing to storage. Synced from
@@ -184,7 +204,10 @@ function OptionsPage() {
 
   const handleCopy = async () => {
     if (!selected) return
-    await navigator.clipboard.writeText(selected.content)
+    // Copy what the user sees in the editor, not what's been flushed to
+    // storage -- @plasmohq/storage's async write means selected.content
+    // can lag a keystroke or two behind contentDraft.
+    await navigator.clipboard.writeText(contentDraft)
   }
 
   return (
@@ -290,10 +313,11 @@ function OptionsPage() {
             <div className="flex items-center gap-2">
               <input
                 type="text"
-                value={selected.name}
-                onChange={(e) =>
+                value={nameDraft}
+                onChange={(e) => {
+                  setNameDraft(e.target.value)
                   updateSkill(selected.id, { name: e.target.value })
-                }
+                }}
                 placeholder="Skill name"
                 maxLength={80}
                 className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900"
@@ -367,10 +391,11 @@ function OptionsPage() {
                 </label>
                 <textarea
                   id="md-editor"
-                  value={selected.content}
-                  onChange={(e) =>
+                  value={contentDraft}
+                  onChange={(e) => {
+                    setContentDraft(e.target.value)
                     updateSkill(selected.id, { content: e.target.value })
-                  }
+                  }}
                   spellCheck={false}
                   className="min-h-[65vh] w-full resize-y rounded-md border border-slate-300 bg-white p-3 font-mono text-sm leading-relaxed text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                 />

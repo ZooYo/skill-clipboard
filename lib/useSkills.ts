@@ -2,6 +2,7 @@ import { Storage } from "@plasmohq/storage"
 import { useStorage } from "@plasmohq/storage/hook"
 import { useCallback, useEffect, useRef } from "react"
 
+import { migrateToLocalIfNeeded } from "./migrate"
 import {
   COMMAND_PATTERN,
   createSkill,
@@ -25,28 +26,16 @@ export type PrefixValidation =
   | { ok: true }
   | { ok: false; reason: "format" }
 
-// One-time migration: if the new key is empty but the legacy single-markdown
-// key still has content, fold it into a single named skill and drop the old
-// key so we don't keep re-importing it.
-async function migrateLegacyIfNeeded() {
-  const storage = new Storage()
-  const existing = await storage.get(STORAGE_KEYS.skills)
-  if (existing) return
-
-  const legacy = await storage.get<string>(STORAGE_KEYS.legacyMarkdown)
-  if (typeof legacy !== "string" || legacy.length === 0) return
-
-  const migrated: SkillsState = {
-    version: 1,
-    skills: [createSkill("My Prompt", legacy)]
-  }
-  await storage.set(STORAGE_KEYS.skills, migrated)
-  await storage.remove(STORAGE_KEYS.legacyMarkdown)
-}
+// We persist to chrome.storage.local instead of "sync" so that:
+//   * per-keystroke writes don't hit sync's 120 ops/min cap, and
+//   * snippets larger than sync's 8KB-per-item limit still fit.
+// The extension has no account/login concept anyway, so cross-device
+// sync isn't useful.
+const localStorage = new Storage({ area: "local" })
 
 export function useSkills() {
   const [state, setState] = useStorage<SkillsState>(
-    STORAGE_KEYS.skills,
+    { key: STORAGE_KEYS.skills, instance: localStorage },
     (stored) => parseSkillsState(stored)
   )
 
@@ -54,7 +43,7 @@ export function useSkills() {
   useEffect(() => {
     if (migratedRef.current) return
     migratedRef.current = true
-    migrateLegacyIfNeeded().catch(() => {
+    migrateToLocalIfNeeded().catch(() => {
       // Migration is best-effort; defaults still work.
     })
   }, [])

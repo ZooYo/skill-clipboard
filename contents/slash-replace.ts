@@ -1,6 +1,7 @@
 import { Storage } from "@plasmohq/storage"
 import type { PlasmoCSConfig } from "plasmo"
 
+import { migrateToLocalIfNeeded } from "~lib/migrate"
 import {
   DEFAULT_PREFIX,
   parseSkillsState,
@@ -51,7 +52,10 @@ function buildCache(state: SkillsState): Cache {
   return { prefix, byCommand, pattern }
 }
 
-const storage = new Storage()
+// Must match the area used by the options/popup surfaces (lib/useSkills.ts);
+// otherwise this content script reads a stale/empty key and command
+// expansion silently stops working.
+const storage = new Storage({ area: "local" })
 
 async function reload() {
   try {
@@ -62,12 +66,47 @@ async function reload() {
   }
 }
 
-storage.watch({
-  [STORAGE_KEYS.skills]: () => {
+// Live cache invalidation. Three independent signals so the cache stays
+// fresh even when one of them drops:
+//   1. chrome.storage.onChanged - the canonical push path. Bypasses
+//      @plasmohq/storage's wrapper because the wrapper's listener has
+//      been observed to silently stop firing in long-lived content
+//      scripts after extension HMR / context invalidation.
+//   2. visibilitychange (visible) - belt-and-suspenders pull path. Any
+//      time the user tabs back to the chat page we re-read storage so
+//      a missed event can never produce stale expansions.
+//   3. focus - some browsers fire focus but not visibilitychange when
+//      switching windows; covers that case.
+try {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return
+    if (!(STORAGE_KEYS.skills in changes)) return
     void reload()
-  }
-})
-void reload()
+  })
+} catch {
+  // chrome.storage.onChanged unavailable (extremely unusual in MV3
+  // content scripts with the "storage" permission); the visibility/
+  // focus paths still keep us mostly fresh.
+}
+
+const refresh = () => {
+  if (document.visibilityState === "visible") void reload()
+}
+document.addEventListener("visibilitychange", refresh)
+window.addEventListener("focus", refresh)
+
+// First-run migration: pre-local installs still have data sitting in
+// chrome.storage.sync. We must run this BEFORE the initial reload so the
+// content script doesn't see an empty local store and silently disable
+// command expansion until the user happens to open the options page.
+// migrateToLocalIfNeeded is idempotent and races safely with options/popup.
+void migrateToLocalIfNeeded()
+  .catch(() => {
+    // Migration is best-effort; reload still works against whatever's there.
+  })
+  .finally(() => {
+    void reload()
+  })
 
 // ---------- Composer detection (works for textarea + contenteditable) ----------
 
