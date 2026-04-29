@@ -297,14 +297,66 @@ function insertViaExecCommand(text: string): boolean {
 //   back to direct DOM mutation and let PM's MutationObserver reconcile.
 // - Lexical (Perplexity): also keeps its own selection but accepts
 //   synthetic key events. Backspace simulation works.
-// - Everything else (Gemini, plain CE): honours DOM selection; the
-//   classic execCommand("delete") path works.
+// - Quill (Gemini's Angular composer): trigger deletion via the generic
+//   execCommand("delete") path works fine, but `insertLineBreak` is a
+//   no-op in Quill so multi-line content gets flattened into a single
+//   <p>. We drive Quill's keymap directly with synthetic Enter events
+//   between insertText lines.
+// - Everything else (plain CE): honours DOM selection; the classic
+//   execCommand("delete") + execCommand("insertText/Break") path works.
 function isProseMirror(el: HTMLElement): boolean {
   return Boolean(el.closest(".ProseMirror"))
 }
 
 function isLexical(el: HTMLElement): boolean {
   return Boolean(el.closest("[data-lexical-editor]"))
+}
+
+function isQuill(el: HTMLElement): boolean {
+  return Boolean(el.closest(".ql-editor"))
+}
+
+// Insert multi-line text into a Quill editor (Gemini).
+//
+// Why not synthetic Enter keydown? Gemini's "send" handler is on
+// keydown; a synthetic Enter event causes the message to get submitted
+// mid-expansion and the rest of the lines never make it in. Anything
+// that involves a real Enter/Return keydown is therefore off-limits.
+//
+// Why not synthetic paste? On current Gemini, dispatched ClipboardEvents
+// don't reach Quill's clipboard handler (defaultPrevented stays false),
+// so the multi-line input falls through to insertText per-line and
+// joins everything into one paragraph.
+//
+// What works: execCommand("insertParagraph") fires beforeinput with
+// inputType="insertParagraph". Quill's Input module turns that into a
+// Delta '\n' insert (a real paragraph break) and crucially doesn't go
+// through keydown -- Gemini's send handler stays silent.
+function insertForQuill(target: HTMLElement, text: string): boolean {
+  // target is intentionally received but unused: insertParagraph /
+  // insertText operate on document.activeElement's selection, which is
+  // already positioned correctly after phase 1.
+  void target
+  const lines = text.split(/\r?\n/)
+  let anySuccess = false
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      try {
+        anySuccess = document.execCommand("insertParagraph") || anySuccess
+      } catch {
+        // ignore; we'll fall through to the legacy paths below
+      }
+    }
+    if (lines[i].length > 0) {
+      try {
+        anySuccess =
+          document.execCommand("insertText", false, lines[i]) || anySuccess
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return anySuccess
 }
 
 function simulateBackspaces(target: EventTarget, count: number) {
@@ -435,6 +487,11 @@ function replaceContentEditable(
   // Phase 2: insert the replacement at the (now collapsed) caret.
   const isMultiline = /\r?\n/.test(replacement)
   if (isMultiline) {
+    // Quill (Gemini) needs Enter keydown between lines because
+    // execCommand("insertLineBreak") is a no-op for it; without this it
+    // silently joins every line into one paragraph. Synthetic paste also
+    // gets flattened on current Gemini, so we don't try it here.
+    if (isQuill(el) && insertForQuill(el, replacement)) return
     if (dispatchPaste(el, replacement)) return
     if (insertViaExecCommand(replacement)) return
   } else {
