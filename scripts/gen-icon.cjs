@@ -62,13 +62,22 @@ function makeMath(g) {
   }
 
   function inSGlyph(x, y) {
+    // Half-open ranges so STROKE means exactly N pixels thick. With <=
+    // both ends inclusive, STROKE=2 ends up 3 px thick and at 16x16 the
+    // three horizontal bars merge into a solid block, hiding the S.
+    const halfStroke = STROKE / 2
     const inHorizontalBar = (yCenter) =>
-      Math.abs(y - yCenter) <= STROKE / 2 && x >= LEFT && x <= RIGHT
-    if (inHorizontalBar(TOP + STROKE / 2)) return true
+      y >= yCenter - halfStroke &&
+      y < yCenter + halfStroke &&
+      x >= LEFT &&
+      x < RIGHT
+    if (inHorizontalBar(TOP + halfStroke)) return true
     if (inHorizontalBar(MID)) return true
-    if (inHorizontalBar(BOTTOM - STROKE / 2)) return true
-    if (x >= LEFT && x <= LEFT + STROKE && y >= TOP && y <= MID) return true
-    if (x >= RIGHT - STROKE && x <= RIGHT && y >= MID && y <= BOTTOM) return true
+    if (inHorizontalBar(BOTTOM - halfStroke)) return true
+    // Top-left vertical: same half-open width.
+    if (x >= LEFT && x < LEFT + STROKE && y >= TOP && y < MID) return true
+    // Bottom-right vertical.
+    if (x >= RIGHT - STROKE && x < RIGHT && y >= MID && y < BOTTOM) return true
     return false
   }
 
