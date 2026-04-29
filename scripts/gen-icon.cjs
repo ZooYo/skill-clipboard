@@ -1,60 +1,84 @@
-// Generate assets/icon.png — a simple 512x512 rounded blue square with a
-// white "S" shape, encoded directly as a PNG using only Node built-ins.
+// Generate skill-clipboard icons at multiple sizes - a rounded blue square
+// with a white "S" shape. We render every size natively (no downscaling)
+// because Plasmo's @parcel/transformer-image pipeline uses sharp/libvips,
+// which converts our PNG to grayscale during resize. By providing each
+// size directly under assets/ Plasmo skips the sharp resize step entirely
+// and copies our PNG byte-for-byte into the build output.
 //
 // Run: node scripts/gen-icon.cjs
 const fs = require("node:fs")
 const path = require("node:path")
 const zlib = require("node:zlib")
 
-const SIZE = 512
-const RADIUS = 96
-const BG = [24, 119, 242] // Facebook blue (#1877F2)
+const BG = [24, 119, 242] // #1877F2
 const FG = [255, 255, 255]
 
-// Signed distance from (x, y) to a rounded square that fills the canvas.
-// Negative inside, positive outside, zero on the edge.
-function roundedRectSDF(x, y) {
-  const cx = SIZE / 2
-  const cy = SIZE / 2
-  const halfW = SIZE / 2 - RADIUS
-  const halfH = SIZE / 2 - RADIUS
-  const dx = Math.max(Math.abs(x - cx) - halfW, 0)
-  const dy = Math.max(Math.abs(y - cy) - halfH, 0)
-  return Math.hypot(dx, dy) - RADIUS
+// Sizes Plasmo writes into manifest.icons. icon.png (512) is also kept as
+// a high-res master suitable for the Chrome Web Store listing.
+const SIZES = [16, 32, 48, 64, 128]
+const MASTER_SIZE = 512
+
+// Proportional geometry. RADIUS / STROKE / PAD bumps slightly at very small
+// sizes so the S glyph stays readable.
+function geometryFor(size) {
+  const r = size / 512
+  return {
+    SIZE: size,
+    RADIUS: Math.max(2, Math.round(96 * r)),
+    STROKE: Math.max(2, Math.round(64 * r)),
+    PAD: Math.max(2, Math.round(96 * r)),
+    EXTRA: Math.max(0, Math.round(16 * r))
+  }
 }
 
-function coverageAt(x, y) {
-  // Sample on the pixel centre and use the SDF as a 1-pixel-wide AA band.
-  const d = roundedRectSDF(x + 0.5, y + 0.5)
-  if (d <= -0.5) return 1
-  if (d >= 0.5) return 0
-  return 0.5 - d
+function makeMath(g) {
+  const SIZE = g.SIZE
+  const PAD = g.PAD
+  const STROKE = g.STROKE
+  const RADIUS = g.RADIUS
+  const EXTRA = g.EXTRA
+  const LEFT = PAD
+  const RIGHT = SIZE - PAD
+  const TOP = PAD + EXTRA
+  const BOTTOM = SIZE - PAD - EXTRA
+  const MID = SIZE / 2
+
+  // Signed distance from (x, y) to the rounded square that fills the canvas.
+  function sdf(x, y) {
+    const cx = SIZE / 2
+    const cy = SIZE / 2
+    const halfW = SIZE / 2 - RADIUS
+    const halfH = SIZE / 2 - RADIUS
+    const dx = Math.max(Math.abs(x - cx) - halfW, 0)
+    const dy = Math.max(Math.abs(y - cy) - halfH, 0)
+    return Math.hypot(dx, dy) - RADIUS
+  }
+
+  function coverageAt(x, y) {
+    const d = sdf(x + 0.5, y + 0.5)
+    if (d <= -0.5) return 1
+    if (d >= 0.5) return 0
+    return 0.5 - d
+  }
+
+  function inSGlyph(x, y) {
+    const inHorizontalBar = (yCenter) =>
+      Math.abs(y - yCenter) <= STROKE / 2 && x >= LEFT && x <= RIGHT
+    if (inHorizontalBar(TOP + STROKE / 2)) return true
+    if (inHorizontalBar(MID)) return true
+    if (inHorizontalBar(BOTTOM - STROKE / 2)) return true
+    if (x >= LEFT && x <= LEFT + STROKE && y >= TOP && y <= MID) return true
+    if (x >= RIGHT - STROKE && x <= RIGHT && y >= MID && y <= BOTTOM) return true
+    return false
+  }
+
+  return { coverageAt, inSGlyph }
 }
 
-// Letter "S" drawn from three rounded bars + connecting strokes.
-// Coordinates target a 512x512 canvas.
-const STROKE = 64
-const PAD = 96
-const LEFT = PAD
-const RIGHT = SIZE - PAD
-const TOP = PAD + 16
-const BOTTOM = SIZE - PAD - 16
-const MID = SIZE / 2
-
-function inSGlyph(x, y) {
-  const inHorizontalBar = (yCenter) => Math.abs(y - yCenter) <= STROKE / 2 && x >= LEFT && x <= RIGHT
-  if (inHorizontalBar(TOP + STROKE / 2)) return true
-  if (inHorizontalBar(MID)) return true
-  if (inHorizontalBar(BOTTOM - STROKE / 2)) return true
-  // Top-left vertical stroke
-  if (x >= LEFT && x <= LEFT + STROKE && y >= TOP && y <= MID) return true
-  // Bottom-right vertical stroke
-  if (x >= RIGHT - STROKE && x <= RIGHT && y >= MID && y <= BOTTOM) return true
-  return false
-}
-
-function buildPixels() {
-  const stride = SIZE * 4 + 1 // +1 for filter byte per row
+function buildPixels(g) {
+  const { SIZE } = g
+  const { coverageAt, inSGlyph } = makeMath(g)
+  const stride = SIZE * 4 + 1 // +1 filter byte per row
   const buf = Buffer.alloc(stride * SIZE)
   for (let y = 0; y < SIZE; y++) {
     const row = y * stride
@@ -62,28 +86,18 @@ function buildPixels() {
     for (let x = 0; x < SIZE; x++) {
       const off = row + 1 + x * 4
       const isFg = inSGlyph(x, y)
-      const [r, g, b] = isFg ? FG : BG
-      // RGB is always the intended ink colour — even in transparent corners
-      // we leave RGB = BG so sharp's premultiply/demultiply roundtrip during
-      // downscaling can't drag edge pixels toward a different hue.
+      const [r, gg, bb] = isFg ? FG : BG
+      // RGB stays the intended ink colour even in transparent pixels so the
+      // PNG decoder/compositor never has a chance to drag edge hues toward
+      // some other colour.
       const alpha = Math.round(coverageAt(x, y) * 255)
       buf[off] = r
-      buf[off + 1] = g
-      buf[off + 2] = b
+      buf[off + 1] = gg
+      buf[off + 2] = bb
       buf[off + 3] = alpha
     }
   }
   return buf
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4)
-  len.writeUInt32BE(data.length, 0)
-  const typeBuf = Buffer.from(type, "ascii")
-  const crc = Buffer.alloc(4)
-  const crcVal = computeCRC(Buffer.concat([typeBuf, data]))
-  crc.writeUInt32BE(crcVal >>> 0, 0)
-  return Buffer.concat([len, typeBuf, data, crc])
 }
 
 let crcTable = null
@@ -97,25 +111,33 @@ function computeCRC(buf) {
     }
   }
   let c = 0xffffffff
-  for (let i = 0; i < buf.length; i++) c = (crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8)) >>> 0
+  for (let i = 0; i < buf.length; i++)
+    c = (crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8)) >>> 0
   return (c ^ 0xffffffff) >>> 0
 }
 
-function buildPng() {
+function chunk(type, data) {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length, 0)
+  const typeBuf = Buffer.from(type, "ascii")
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(computeCRC(Buffer.concat([typeBuf, data])) >>> 0, 0)
+  return Buffer.concat([len, typeBuf, data, crc])
+}
+
+function buildPng(size) {
+  const g = geometryFor(size)
   const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
   const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(SIZE, 0)
-  ihdr.writeUInt32BE(SIZE, 4)
+  ihdr.writeUInt32BE(size, 0)
+  ihdr.writeUInt32BE(size, 4)
   ihdr[8] = 8 // bit depth
-  ihdr[9] = 6 // color type RGBA
+  ihdr[9] = 6 // RGBA
   ihdr[10] = 0
   ihdr[11] = 0
   ihdr[12] = 0
-  const idatRaw = buildPixels()
+  const idatRaw = buildPixels(g)
   const idat = zlib.deflateSync(idatRaw, { level: 9 })
-  // Tag the PNG as sRGB so downstream resamplers (sharp/libvips inside
-  // Plasmo) do not treat the pixels as linear-light, which otherwise
-  // desaturates the image when generating 16/32/48/64/128px variants.
   const srgb = Buffer.from([0])
   return Buffer.concat([
     sig,
@@ -128,6 +150,14 @@ function buildPng() {
 
 const outDir = path.join(__dirname, "..", "assets")
 fs.mkdirSync(outDir, { recursive: true })
-const outFile = path.join(outDir, "icon.png")
-fs.writeFileSync(outFile, buildPng())
-console.log(`Wrote ${outFile} (${SIZE}x${SIZE})`)
+
+// Master keeps the original filename so the Chrome Web Store listing /
+// store assets can use a single high-res reference.
+fs.writeFileSync(path.join(outDir, "icon.png"), buildPng(MASTER_SIZE))
+console.log(`Wrote assets/icon.png (${MASTER_SIZE}x${MASTER_SIZE})`)
+
+for (const size of SIZES) {
+  const file = `icon${size}.png`
+  fs.writeFileSync(path.join(outDir, file), buildPng(size))
+  console.log(`Wrote assets/${file} (${size}x${size})`)
+}

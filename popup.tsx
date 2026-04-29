@@ -15,7 +15,7 @@ function openOptionsAt(hash?: string) {
 }
 
 function Popup() {
-  const { skills } = useSkills()
+  const { skills, prefix } = useSkills()
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -75,15 +75,23 @@ function Popup() {
                   type="button"
                   onClick={() => handleCopy(skill.id, skill.content)}
                   title="Click to copy"
-                  className="flex flex-1 items-center justify-between px-4 py-2.5 text-left text-sm">
+                  className="flex min-w-0 flex-1 items-center justify-between gap-3 px-4 py-2.5 text-left text-sm">
                   <span className="truncate font-medium">{displayName}</span>
-                  <span
-                    className={`ml-3 shrink-0 text-xs ${
-                      isCopied
-                        ? "text-green-600 dark:text-green-400"
-                        : "text-slate-400"
-                    }`}>
-                    {isCopied ? "Copied" : "Copy"}
+                  <span className="flex shrink-0 items-center gap-2 text-xs">
+                    {skill.command ? (
+                      <span className="font-mono text-slate-400 dark:text-slate-500">
+                        {prefix}
+                        {skill.command}
+                      </span>
+                    ) : null}
+                    <span
+                      className={
+                        isCopied
+                          ? "text-green-600 dark:text-green-400"
+                          : "text-slate-400"
+                      }>
+                      {isCopied ? "Copied" : "Copy"}
+                    </span>
                   </span>
                 </button>
                 <button

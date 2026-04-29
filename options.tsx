@@ -6,6 +6,15 @@ import { useSkills } from "~lib/useSkills"
 
 import "./style.css"
 
+function stripLeadingPrefix(raw: string, prefix: string): string {
+  if (!prefix) return raw
+  let stripped = raw
+  while (stripped.startsWith(prefix)) {
+    stripped = stripped.slice(prefix.length)
+  }
+  return stripped
+}
+
 function parseHashSelection(hash: string): { kind: "id"; id: string } | { kind: "new" } | null {
   const stripped = hash.replace(/^#/, "")
   if (stripped === "/new") return { kind: "new" }
@@ -22,10 +31,37 @@ function setSelectionHash(id: string | null) {
 }
 
 function OptionsPage() {
-  const { skills, canAdd, addSkill, updateSkill, removeSkill } = useSkills()
+  const {
+    skills,
+    prefix,
+    canAdd,
+    addSkill,
+    updateSkill,
+    removeSkill,
+    setPrefix,
+    validatePrefix,
+    validateCommand
+  } = useSkills()
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const hashHandledRef = useRef(false)
+
+  // Local draft for the prefix input so users can type without committing
+  // invalid intermediate values to storage.
+  const [prefixDraft, setPrefixDraft] = useState(prefix)
+  useEffect(() => {
+    setPrefixDraft(prefix)
+  }, [prefix])
+  const prefixCheck = validatePrefix(prefixDraft)
+  const prefixDirty = prefixDraft !== prefix
+
+  const handlePrefixChange = (next: string) => {
+    setPrefixDraft(next)
+    if (validatePrefix(next).ok) {
+      setPrefix(next)
+    }
+  }
+
 
   // Resolve initial selection from URL hash, or fall back to first skill.
   // We re-run until skills have loaded the first time so hashes work even
@@ -88,6 +124,35 @@ function OptionsPage() {
     [selected?.content]
   )
 
+  // Per-selection draft for the command input so users can type/erase without
+  // hitting validation errors instantly committing to storage. Synced from
+  // the skill record when selection changes or storage updates externally.
+  const [commandDraft, setCommandDraft] = useState("")
+  useEffect(() => {
+    setCommandDraft(selected?.command ?? "")
+  }, [selectedId, selected?.command])
+
+  const commandCheck = useMemo(
+    () => (selected ? validateCommand(commandDraft, selected.id) : null),
+    [commandDraft, selected, validateCommand]
+  )
+
+  const handleCommandChange = (raw: string) => {
+    // If the user pasted "/myskill" we silently strip the live prefix.
+    const cleaned = stripLeadingPrefix(raw.trim(), prefix)
+    setCommandDraft(cleaned)
+    if (!selected) return
+    if (cleaned === "") {
+      updateSkill(selected.id, { command: undefined })
+      return
+    }
+    const check = validateCommand(cleaned, selected.id)
+    if (check.ok || check.reason === "duplicate") {
+      // duplicates still commit (last-defined wins at runtime, with UI warning).
+      updateSkill(selected.id, { command: cleaned })
+    }
+  }
+
   const handleSelect = (id: string) => {
     setSelectedId(id)
     setSelectionHash(id)
@@ -125,20 +190,52 @@ function OptionsPage() {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <header className="border-b border-slate-200 dark:border-slate-800">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
           <div>
             <h1 className="text-xl font-semibold">Skill Clipboard</h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Manage up to {MAX_SKILLS} reusable prompts. The popup shows their
-              names so you can copy any of them in one click.
+              Manage up to {MAX_SKILLS} reusable prompts. Set a command on any
+              skill and type{" "}
+              <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-xs dark:bg-slate-800">
+                {prefix}command
+              </code>{" "}
+              + Space/Tab in Perplexity, ChatGPT, Claude, or Gemini to expand
+              it.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-end gap-3">
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
+              <span className="uppercase tracking-wide">Trigger prefix</span>
+              <input
+                type="text"
+                value={prefixDraft}
+                onChange={(e) => handlePrefixChange(e.target.value)}
+                spellCheck={false}
+                maxLength={3}
+                className={`w-20 rounded-md border bg-white px-2 py-1 text-center font-mono text-sm shadow-sm focus:outline-none focus:ring-1 dark:bg-slate-900 ${
+                  prefixCheck.ok
+                    ? "border-slate-300 focus:border-blue-500 focus:ring-blue-500 dark:border-slate-700"
+                    : "border-red-400 text-red-600 focus:border-red-500 focus:ring-red-500 dark:border-red-800 dark:text-red-400"
+                }`}
+              />
+              <span
+                className={`h-3 text-[10px] ${
+                  prefixCheck.ok
+                    ? "text-slate-400"
+                    : "text-red-600 dark:text-red-400"
+                }`}>
+                {prefixCheck.ok
+                  ? prefixDirty
+                    ? "saved"
+                    : "1\u20133 symbol chars"
+                  : "1\u20133 symbol chars (no spaces, no letters)"}
+              </span>
+            </label>
             <button
               type="button"
               onClick={handleCopy}
               disabled={!selected}
-              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+              className="mb-5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
               Copy markdown
             </button>
           </div>
@@ -207,6 +304,58 @@ function OptionsPage() {
                 className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30">
                 Delete
               </button>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="cmd-input"
+                className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Command (optional)
+              </label>
+              <div
+                className={`flex items-stretch overflow-hidden rounded-md border bg-white shadow-sm focus-within:ring-1 dark:bg-slate-900 ${
+                  !commandCheck || commandCheck.ok
+                    ? "border-slate-300 focus-within:border-blue-500 focus-within:ring-blue-500 dark:border-slate-700"
+                    : commandCheck.reason === "duplicate"
+                      ? "border-amber-400 focus-within:ring-amber-500 dark:border-amber-700"
+                      : "border-red-400 focus-within:ring-red-500 dark:border-red-800"
+                }`}>
+                <span className="flex select-none items-center bg-slate-100 px-2.5 font-mono text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                  {prefix}
+                </span>
+                <input
+                  id="cmd-input"
+                  type="text"
+                  value={commandDraft}
+                  onChange={(e) => handleCommandChange(e.target.value)}
+                  placeholder="myskill"
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={32}
+                  className="flex-1 bg-transparent px-3 py-2 font-mono text-sm focus:outline-none"
+                />
+              </div>
+              <p
+                className={`text-[11px] ${
+                  !commandCheck || commandCheck.ok
+                    ? "text-slate-400"
+                    : commandCheck.reason === "duplicate"
+                      ? "text-amber-600 dark:text-amber-400"
+                      : "text-red-600 dark:text-red-400"
+                }`}>
+                {(() => {
+                  if (!commandCheck || commandDraft.trim() === "") {
+                    return `Leave empty to disable. With a command, type "${prefix}${commandDraft || "myskill"}" + Space/Tab in supported chats.`
+                  }
+                  if (commandCheck.ok) {
+                    return `Type "${prefix}${commandDraft}" + Space or Tab in supported chats to insert this prompt.`
+                  }
+                  if (commandCheck.reason === "duplicate") {
+                    return `Already used by "${commandCheck.conflictName}". Last edit will win at runtime.`
+                  }
+                  return "Use 1\u201332 chars: a\u2013z, 0\u20139, _ or -."
+                })()}
+              </p>
             </div>
 
             <div className="grid min-w-0 gap-4 md:grid-cols-2">
