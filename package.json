@@ -1,0 +1,42 @@
+{
+  "name": "skill-clipboard",
+  "displayName": "Skill Clipboard",
+  "version": "0.0.1",
+  "description": "Edit reusable markdown snippets and copy them as AI chat prompts.",
+  "author": "luke.hsiao",
+  "private": true,
+  "scripts": {
+    "dev": "plasmo dev",
+    "build": "plasmo build",
+    "package": "plasmo package",
+    "format": "prettier --write \"**/*.{ts,tsx,css,md,json}\""
+  },
+  "manifest": {
+    "name": "Skill Clipboard",
+    "permissions": [
+      "storage"
+    ],
+    "options_ui": {
+      "open_in_tab": true
+    }
+  },
+  "dependencies": {
+    "@plasmohq/storage": "^1.15.0",
+    "dompurify": "^3.4.1",
+    "marked": "^18.0.2",
+    "plasmo": "^0.90.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.40",
+    "@types/node": "^25.6.0",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.12",
+    "prettier": "^3.8.3",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^6.0.3"
+  }
+}
