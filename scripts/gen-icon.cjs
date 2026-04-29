@@ -8,19 +8,27 @@ const zlib = require("node:zlib")
 
 const SIZE = 512
 const RADIUS = 96
-const BG = [37, 99, 235]
+const BG = [24, 119, 242] // Facebook blue (#1877F2)
 const FG = [255, 255, 255]
 
-function inRoundedRect(x, y) {
-  const min = RADIUS
-  const max = SIZE - 1 - RADIUS
-  if (x >= min && x <= max) return true
-  if (y >= min && y <= max) return true
-  const cx = x < min ? min : max
-  const cy = y < min ? min : max
-  const dx = x - cx
-  const dy = y - cy
-  return dx * dx + dy * dy <= RADIUS * RADIUS
+// Signed distance from (x, y) to a rounded square that fills the canvas.
+// Negative inside, positive outside, zero on the edge.
+function roundedRectSDF(x, y) {
+  const cx = SIZE / 2
+  const cy = SIZE / 2
+  const halfW = SIZE / 2 - RADIUS
+  const halfH = SIZE / 2 - RADIUS
+  const dx = Math.max(Math.abs(x - cx) - halfW, 0)
+  const dy = Math.max(Math.abs(y - cy) - halfH, 0)
+  return Math.hypot(dx, dy) - RADIUS
+}
+
+function coverageAt(x, y) {
+  // Sample on the pixel centre and use the SDF as a 1-pixel-wide AA band.
+  const d = roundedRectSDF(x + 0.5, y + 0.5)
+  if (d <= -0.5) return 1
+  if (d >= 0.5) return 0
+  return 0.5 - d
 }
 
 // Letter "S" drawn from three rounded bars + connecting strokes.
@@ -53,19 +61,16 @@ function buildPixels() {
     buf[row] = 0 // filter: None
     for (let x = 0; x < SIZE; x++) {
       const off = row + 1 + x * 4
-      if (!inRoundedRect(x, y)) {
-        buf[off] = 0
-        buf[off + 1] = 0
-        buf[off + 2] = 0
-        buf[off + 3] = 0
-        continue
-      }
       const isFg = inSGlyph(x, y)
       const [r, g, b] = isFg ? FG : BG
+      // RGB is always the intended ink colour — even in transparent corners
+      // we leave RGB = BG so sharp's premultiply/demultiply roundtrip during
+      // downscaling can't drag edge pixels toward a different hue.
+      const alpha = Math.round(coverageAt(x, y) * 255)
       buf[off] = r
       buf[off + 1] = g
       buf[off + 2] = b
-      buf[off + 3] = 255
+      buf[off + 3] = alpha
     }
   }
   return buf
@@ -108,9 +113,14 @@ function buildPng() {
   ihdr[12] = 0
   const idatRaw = buildPixels()
   const idat = zlib.deflateSync(idatRaw, { level: 9 })
+  // Tag the PNG as sRGB so downstream resamplers (sharp/libvips inside
+  // Plasmo) do not treat the pixels as linear-light, which otherwise
+  // desaturates the image when generating 16/32/48/64/128px variants.
+  const srgb = Buffer.from([0])
   return Buffer.concat([
     sig,
     chunk("IHDR", ihdr),
+    chunk("sRGB", srgb),
     chunk("IDAT", idat),
     chunk("IEND", Buffer.alloc(0))
   ])
